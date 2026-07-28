@@ -1,5 +1,7 @@
 'use strict';
 
+const Protocol = require('./lib/protocol');
+
 const utils = require('@iobroker/adapter-core');
 const WebSocket = require('ws');
 let mqttClient = null;
@@ -19,6 +21,7 @@ class Luxtronik2WS extends utils.Adapter {
         this.isConnected = false;
         this.isReady = false;
         this.createdObjects = new Set();
+	this.protocol = new Protocol(this);
 
         // Mapping: Bereichsname → Config-Flag
         this.sectionMapping = {
@@ -39,6 +42,7 @@ class Luxtronik2WS extends utils.Adapter {
 
         this.on('ready', this.onReady.bind(this));
         this.on('unload', this.onUnload.bind(this));
+	this.on('stateChange', this.onStateChange.bind(this));
     }
 
     async onReady() {
@@ -50,6 +54,8 @@ class Luxtronik2WS extends utils.Adapter {
         if (this.config.loxoneEnabled && this.config.loxoneMqttHost) {
             this.connectMqtt();
         }
+
+	await this.subscribeStates('*');
 
         this.connect();
     }
@@ -123,12 +129,12 @@ class Luxtronik2WS extends utils.Adapter {
         this.ws.on('error', (err) => this.log.error(`WebSocket Fehler: ${err.message}`));
     }
 
-    send(msg) {
-        if (this.ws && this.ws.readyState === WebSocket.OPEN) {
-            this.ws.send(msg);
-            this.log.debug(`📤 ${msg}`);
-        }
+send(msg) {
+    if (this.ws && this.ws.readyState === WebSocket.OPEN) {
+        this.log.warn(`TX: ${msg}`);
+        this.ws.send(msg);
     }
+}
 
     scheduleReconnect() {
         const interval = (this.config.reconnectInterval || 60) * 1000;
@@ -144,6 +150,7 @@ class Luxtronik2WS extends utils.Adapter {
     // ─── Nachrichten ─────────────────────────────────────────────────────────
 
     handleMessage(raw) {
+		this.log.warn(`RX: ${raw}`);
         let data;
         try { data = JSON.parse(raw); } catch (e) { return; }
 
@@ -182,14 +189,20 @@ class Luxtronik2WS extends utils.Adapter {
         }
     }
 
-    pollAll() {
-        if (!this.isReady || !this.isConnected) return;
-        const active = this.navIds.filter(n => this.isSectionEnabled(n.name));
-        this.log.debug(`🔄 Polling ${active.length} Bereiche...`);
-        for (const entry of active) {
-            this.send(`GET;${entry.id}`);
+pollAll() {
+    if (!this.isReady || !this.isConnected) return;
+    const active = this.navIds.filter(n => this.isSectionEnabled(n.name));
+    this.log.debug(`🔄 Polling ${active.length} Bereiche...`);
+
+    for (const entry of active) {
+
+        if (entry.name === "Einstellungen") {
+            this.log.warn(`GET Einstellungen -> ${entry.id}`);
         }
+
+        this.send(`GET;${entry.id}`);
     }
+}
 
     // ─── States + MQTT ────────────────────────────────────────────────────────
 
@@ -202,22 +215,56 @@ class Luxtronik2WS extends utils.Adapter {
             const unit = item.unit || '';
             const role = this.guessRole(item.name, unit);
 
+if (sectionName === "Einstellungen" && item.name === "Heizkreis") {
+    this.log.warn(`CONTENT Heizkreis -> ${item.id}`);
+}
+
             // Typ immer korrekt bestimmen — nie von typeof value abhängig machen
-            const stateType = (typeof value === 'boolean') ? 'boolean' :
-                              (typeof value === 'number') ? 'number' : 'string';
+            // Typ bestimmen
+				let stateType;
+
+					if (item.raw !== undefined) {					    stateType = typeof item.raw;
+				} else {
+				    stateType =
+				        (typeof value === 'boolean') ? 'boolean' :
+				        (typeof value === 'number') ? 'number' : 'string';
+				}
 
             if (!this.createdObjects.has(stateId)) {
                 await this.setObjectAsync(stateId, {
                     type: 'state',
                     common: {
-                        name: item.name,
-                        type: stateType,
-                        role: role,
-                        unit: unit,
-                        read: true,
-                        write: item.readOnly === false,
-                    },
-                    native: { luxId: item.id || '' }
+						name: item.name,
+						type: stateType,
+						role: role,
+						unit: unit,
+						read: true,
+						write: item.raw !== undefined,
+
+						min: item.min !== undefined
+							? (item.div ? item.min / item.div : item.min)
+							: undefined,
+
+						max: item.max !== undefined
+							? (item.div ? item.max / item.div : item.max)
+							: undefined,
+
+						step: item.step !== undefined
+							? (item.div ? item.step / item.div : item.step)
+							: undefined,
+
+						states: item.options || undefined
+					},
+                    native: {
+						luxId: item.id || '',
+						raw: item.raw,
+						type: item.type || '',
+						div: item.div || 1,
+						options: item.options || null,
+						min: item.min,
+						max: item.max,
+						step: item.step
+					}
                 });
                 this.createdObjects.add(stateId);
                 this.log.debug(`📝 Objekt erstellt: ${stateId} (${stateType})`);
@@ -274,6 +321,28 @@ class Luxtronik2WS extends utils.Adapter {
     }
 
     // ─── Stop ─────────────────────────────────────────────────────────────────
+
+async onStateChange(id, state) {
+
+    if (!state || state.ack) return;
+
+    const obj = await this.getObjectAsync(id);
+
+    if (!obj?.native?.luxId) {
+        this.log.warn(`Keine luxId für ${id}`);
+        return;
+    }
+
+    const command = `SET;set_${obj.native.luxId};${state.val}`;
+
+	this.log.warn(`SEND => ${command}`);
+	this.log.info(`LuxID=${obj.native.luxId} RAW=${state.val}`);
+	this.send(command);
+
+	setTimeout(() => {
+	    this.send("SAVE;1");
+	}, 250);
+}
 
     onUnload(callback) {
         try {
