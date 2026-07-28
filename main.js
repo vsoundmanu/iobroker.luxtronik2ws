@@ -1,6 +1,8 @@
 'use strict';
 
 const Protocol = require('./lib/protocol');
+const Constants = require('./lib/constants');
+const Protocol = require('./lib/protocol');
 
 const utils = require('@iobroker/adapter-core');
 const WebSocket = require('ws');
