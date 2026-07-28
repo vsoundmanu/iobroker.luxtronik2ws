@@ -15,7 +15,6 @@ class Luxtronik2WS extends utils.Adapter {
 
     constructor(options) {
         super({ ...options, name: 'luxtronik2ws' });
-        this.ws = null;
         this.navIds = [];
         this.pollTimer = null;
         this.reconnectTimer = null;
@@ -62,6 +61,9 @@ class Luxtronik2WS extends utils.Adapter {
     }
 
     // ─── MQTT für Loxone ──────────────────────────────────────────────────────
+	// TODO P3:
+	// Remove integrated MQTT/Loxone support.
+	// Use ioBroker MQTT adapter instead.
 
     connectMqtt() {
         if (!mqtt) {
@@ -97,37 +99,7 @@ class Luxtronik2WS extends utils.Adapter {
     // ─── WebSocket ────────────────────────────────────────────────────────────
 
     connect() {
-        const url = `ws://${this.config.host}:${this.config.port}`;
-        try {
-            this.ws = new WebSocket(url, 'Lux_WS');
-        } catch (e) {
-            this.log.error(`WebSocket Fehler: ${e.message}`);
-            this.scheduleReconnect();
-            return;
-        }
-
-        this.ws.on('open', () => {
-            this.log.info(`✅ Verbunden mit ${url}`);
-            this.isConnected = true;
-            this.setStateAsync('info.connection', true, true);
-            this.send(`LOGIN;${this.config.password}`);
-        });
-
-        this.ws.on('message', (data) => this.handleMessage(data.toString()));
-
-        this.ws.on('close', () => {
-            this.log.warn('🔌 Verbindung getrennt');
-            this.isConnected = false;
-            this.isReady = false;
-            this.setStateAsync('info.connection', false, true);
-            if (this.config.loxoneEnabled && mqttClient && mqttClient.connected) {
-                mqttClient.publish(`${this.config.loxoneMqttTopic}/status`, 'offline', { retain: true });
-            }
-            this.clearTimers();
-            this.scheduleReconnect();
-        });
-
-        this.ws.on('error', (err) => this.log.error(`WebSocket Fehler: ${err.message}`));
+		this.protocol.connect();
     }
 
 send(msg) {
@@ -148,7 +120,6 @@ send(msg) {
     // ─── Nachrichten ─────────────────────────────────────────────────────────
 
     handleMessage(raw) {
-		this.log.warn(`RX: ${raw}`);
         let data;
         try { data = JSON.parse(raw); } catch (e) { return; }
 
@@ -194,10 +165,6 @@ pollAll() {
 
     for (const entry of active) {
 
-        if (entry.name === "Einstellungen") {
-            this.log.warn(`GET Einstellungen -> ${entry.id}`);
-        }
-
         this.send(`GET;${entry.id}`);
     }
 }
@@ -213,9 +180,6 @@ pollAll() {
             const unit = item.unit || '';
             const role = this.guessRole(item.name, unit);
 
-if (sectionName === "Einstellungen" && item.name === "Heizkreis") {
-    this.log.warn(`CONTENT Heizkreis -> ${item.id}`);
-}
 
             // Typ immer korrekt bestimmen — nie von typeof value abhängig machen
             // Typ bestimmen
@@ -333,7 +297,6 @@ async onStateChange(id, state) {
 
     const command = `SET;set_${obj.native.luxId};${state.val}`;
 
-	this.log.warn(`SEND => ${command}`);
 	this.log.info(`LuxID=${obj.native.luxId} RAW=${state.val}`);
 	this.send(command);
 
