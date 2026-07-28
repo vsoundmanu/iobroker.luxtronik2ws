@@ -5,6 +5,7 @@ const Constants = require('./lib/constants');
 
 const utils = require('@iobroker/adapter-core');
 const WebSocket = require('ws');
+const Writer = require('./lib/writer');
 let mqttClient = null;
 
 // MQTT optional laden
@@ -22,6 +23,8 @@ class Luxtronik2WS extends utils.Adapter {
         this.isReady = false;
         this.createdObjects = new Set();
 	this.protocol = new Protocol(this);
+	this.writer = new Writer(this);
+	this.testWriteDone = false;
 
         // Mapping: Bereichsname → Config-Flag
         this.sectionMapping = {
@@ -119,26 +122,44 @@ send(msg) {
 
     // ─── Nachrichten ─────────────────────────────────────────────────────────
 
-    handleMessage(raw) {
-        let data;
-        try { data = JSON.parse(raw); } catch (e) { return; }
+async handleMessage(raw) {
+    let data;
 
-        if (data.type === 'Navigation' && data.items) {
-            this.log.info('📂 Navigation empfangen');
-            this.navIds = [];
-            this.extractNavIds(data.items);
-            this.log.info(`📋 ${this.navIds.length} Bereiche gefunden (nach Filter: ${this.navIds.filter(n => this.isSectionEnabled(n.name)).length} aktiv)`);
-            this.isReady = true;
-            this.pollAll();
-            const interval = (this.config.pollInterval || 30) * 1000;
-            this.pollTimer = setInterval(() => this.pollAll(), interval);
-            return;
-        }
-
-        if (data.items && Array.isArray(data.items)) {
-            this.processItems(data.items, data.name || 'unknown');
-        }
+    try {
+        data = JSON.parse(raw);
+    } catch (e) {
+        return;
     }
+
+    if (data.type === 'Navigation' && data.items) {
+        this.log.info('📂 Navigation empfangen');
+
+        this.navIds = [];
+        this.extractNavIds(data.items);
+
+        this.log.info(
+            `📋 ${this.navIds.length} Bereiche gefunden (nach Filter: ${
+                this.navIds.filter(n => this.isSectionEnabled(n.name)).length
+            } aktiv)`
+        );
+
+        this.isReady = true;
+
+        this.pollAll();
+
+        const interval = (this.config.pollInterval || 30) * 1000;
+        this.pollTimer = setInterval(() => this.pollAll(), interval);
+
+        return;
+    }
+
+    if (data.items && Array.isArray(data.items)) {
+        await this.processItems(
+            data.items,
+            data.name || 'unknown'
+        );
+    }
+}
 
     isSectionEnabled(name) {
         const flag = this.sectionMapping[name];
@@ -159,12 +180,18 @@ send(msg) {
     }
 
 pollAll() {
-    if (!this.isReady || !this.isConnected) return;
-    const active = this.navIds.filter(n => this.isSectionEnabled(n.name));
+
+    if (!this.isReady || !this.isConnected) {
+        return;
+    }
+
+    const active = this.navIds.filter(
+        n => this.isSectionEnabled(n.name)
+    );
+
     this.log.debug(`🔄 Polling ${active.length} Bereiche...`);
 
     for (const entry of active) {
-
         this.send(`GET;${entry.id}`);
     }
 }
@@ -173,6 +200,9 @@ pollAll() {
 
     async processItems(items, sectionName) {
         for (const item of items) {
+
+
+
             if (item.value === undefined || item.value === null || !item.name) continue;
 
             const stateId = this.buildStateId(sectionName, item.name);

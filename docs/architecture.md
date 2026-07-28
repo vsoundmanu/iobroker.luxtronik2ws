@@ -138,3 +138,14 @@ ObjectCache ist die einzige Quelle für Metadaten.
 
 5.
 LuxIDs werden niemals dauerhaft gespeichert.
+
+
+## Parameter Model
+
+Der Adapter verwendet intern ausschließlich Parameter-Objekte.
+
+Ein Parameter beschreibt genau ein Objekt der Luxtronik.
+
+Eigenschaften:
+
+...q
