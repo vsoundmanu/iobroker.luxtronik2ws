@@ -6,6 +6,7 @@ const Constants = require('./lib/constants');
 const utils = require('@iobroker/adapter-core');
 const WebSocket = require('ws');
 const Writer = require('./lib/writer');
+const Session = require('./lib/session');
 let mqttClient = null;
 
 // MQTT optional laden
@@ -22,9 +23,9 @@ class Luxtronik2WS extends utils.Adapter {
         this.isConnected = false;
         this.isReady = false;
         this.createdObjects = new Set();
-	this.protocol = new Protocol(this);
-	this.writer = new Writer(this);
-	this.testWriteDone = false;
+		this.protocol = new Protocol(this);
+		this.writer = new Writer(this);
+		this.session = new Session();
 
         // Mapping: Bereichsname → Config-Flag
         this.sectionMapping = {
@@ -135,6 +136,8 @@ async handleMessage(raw) {
         this.log.info('📂 Navigation empfangen');
 
         this.navIds = [];
+        this.session.clear();
+
         this.extractNavIds(data.items);
 
         this.log.info(
@@ -154,10 +157,12 @@ async handleMessage(raw) {
     }
 
     if (data.items && Array.isArray(data.items)) {
+
         await this.processItems(
             data.items,
             data.name || 'unknown'
         );
+
     }
 }
 
@@ -167,17 +172,53 @@ async handleMessage(raw) {
         return this.config[flag] !== false;
     }
 
-    extractNavIds(sections) {
-        const recurse = (items) => {
-            for (const item of items) {
-                if (item.id && item.name) this.navIds.push({ id: item.id, name: item.name });
-                if (item.items && item.items.length > 0) recurse(item.items);
-            }
-        };
-        for (const section of sections) {
-            if (section.items) recurse(section.items);
-        }
-    }
+	extractNavIds(sections) {
+
+		const recurse = (items) => {
+
+			for (const item of items) {
+
+				if (item.id && item.name) {
+
+					this.navIds.push({
+						id: item.id,
+						name: item.name
+					});
+
+					this.session.addNavigation(
+						item.name,
+						item.id
+					);
+				}
+
+				if (item.items && item.items.length > 0) {
+					recurse(item.items);
+				}
+			}
+		};
+
+		for (const section of sections) {
+
+			// Oberste Ebene ebenfalls aufnehmen
+			if (section.id && section.name) {
+
+				this.navIds.push({
+					id: section.id,
+					name: section.name
+				});
+
+				this.session.addNavigation(
+					section.name,
+					section.id
+				);
+			}
+
+			if (section.items) {
+				recurse(section.items);
+			}
+		}
+}
+
 
 pollAll() {
 
@@ -185,9 +226,9 @@ pollAll() {
         return;
     }
 
-    const active = this.navIds.filter(
-        n => this.isSectionEnabled(n.name)
-    );
+    const active = this.session
+        .getNavigationEntries()
+        .filter(entry => this.isSectionEnabled(entry.name));
 
     this.log.debug(`🔄 Polling ${active.length} Bereiche...`);
 
@@ -204,8 +245,12 @@ pollAll() {
 
 
             if (item.value === undefined || item.value === null || !item.name) continue;
-
-            const stateId = this.buildStateId(sectionName, item.name);
+			
+			if (item.id) {
+				this.session.addItem(item.name, item.id);
+			}
+            
+			const stateId = this.buildStateId(sectionName, item.name);
             const value = this.parseValue(item.value);
             const unit = item.unit || '';
             const role = this.guessRole(item.name, unit);
