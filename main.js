@@ -2,7 +2,6 @@
 
 const Protocol = require('./lib/protocol');
 const Constants = require('./lib/constants');
-const Protocol = require('./lib/protocol');
 
 const utils = require('@iobroker/adapter-core');
 const WebSocket = require('ws');
@@ -132,10 +131,7 @@ class Luxtronik2WS extends utils.Adapter {
     }
 
 send(msg) {
-    if (this.ws && this.ws.readyState === WebSocket.OPEN) {
-        this.log.warn(`TX: ${msg}`);
-        this.ws.send(msg);
-    }
+    this.protocol.send(msg);
 }
 
     scheduleReconnect() {
