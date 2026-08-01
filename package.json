@@ -1,6 +1,6 @@
 {
   "name": "iobroker.luxtronik2ws",
-  "version": "0.1.0",
+  "version": "0.2.1",
   "description": "ioBroker Adapter f\u00fcr Alpha Innotec / Luxtronik 2.1 W\u00e4rmepumpen (Firmware >= v3.81) via WebSocket",
   "author": {
     "name": "alessandrocivi",

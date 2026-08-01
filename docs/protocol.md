@@ -173,6 +173,19 @@ Nach SAVE sendet die Luxtronik erneut ein vollständiges Content.
 
 SAVE scheint Änderungen dauerhaft zu übernehmen.
 
+## Schreiben im Adapter (V0.2.1)
+
+Der Adapter öffnet für einen Schreibauftrag eine eigene Sitzung und verwendet
+diese Reihenfolge:
+
+```text
+LOGIN → Navigation → GET Bereich → SET → SAVE → GET Bereich → Verify
+```
+
+Nach dem zweiten `GET` wird der zurückgelesene Rohwert mit dem angeforderten
+Wert verglichen. Stimmen beide nicht überein, wird der Auftrag als
+Schreibfehler behandelt.
+
 ---
 
 # 8. REFRESH

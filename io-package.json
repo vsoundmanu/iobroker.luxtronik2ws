@@ -1,8 +1,12 @@
 {
   "common": {
     "name": "luxtronik2ws",
-    "version": "0.1.0",
+    "version": "0.2.1",
     "news": {
+      "0.2.1": {
+        "en": "Adds queued, verified writes for heating-circuit and hot-water operating modes.",
+        "de": "Ergänzt warteschlangenbasierte und verifizierte Schreibvorgänge für die Betriebsarten Heizkreis und Warmwasser."
+      },
       "0.1.0": {
         "en": "Initial release - WebSocket support for Luxtronik v3.81+",
         "de": "Erstveröffentlichung - WebSocket Unterstützung für Luxtronik v3.81+"

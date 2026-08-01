@@ -228,6 +228,8 @@ Dieses Test-Tool wurde entwickelt um das neue `Lux_WS` WebSocket-Protokoll zu an
 - ✅ Korrekte Einheiten (°C, kWh, kW, h, %)
 - ✅ Konfigurierbar via ioBroker Admin UI
 - ✅ Verbindungsstatus-Anzeige in ioBroker
+- ✅ Sichere Schreibvorgänge für die Betriebsarten Heizkreis und Warmwasser
+  (Queue, SAVE und Rückleseprüfung)
 - ✅ Kompatibel mit ioBroker MQTT Adapter für Loxone Integration
 
 ---
@@ -268,6 +270,23 @@ iobroker add luxtronik2ws
 iobroker restart
 ```
 
+### Entwicklung: Lokales Deployment per SSH
+
+Für eine vorhandene Entwicklungsumgebung kann das versionierte Skript genutzt
+werden. Es kopiert den Adapter per SSH, setzt die passenden Dateirechte,
+installiert die Abhängigkeiten und startet die Instanz neu.
+
+```bash
+bash tools/deploy.sh
+```
+
+Standardziel ist `root@172.16.2.11`. Für ein anderes Ziel kann die Adresse
+temporär überschrieben werden:
+
+```bash
+REMOTE_HOST=root@192.168.1.20 bash tools/deploy.sh
+```
+
 ---
 
 ## Konfiguration
@@ -300,6 +319,22 @@ Der Adapter erstellt **automatisch alle verfügbaren Datenpunkte** basierend auf
 | `anlagenstatus.betriebsstatus` | Aktueller Betriebsstatus | - |
 | `energiemonitor.waermemenge` | Erzeugte Wärmemenge gesamt | kWh |
 | `energiemonitor.leistungsaufnahme` | Aktuelle Leistungsaufnahme | kW |
+
+## Schreiben von Betriebsarten
+
+V0.2.1 unterstützt diese schreibbaren States:
+
+| State | Werte | Wirkung |
+|---|---:|---|
+| `Einstellungen.heizkreis` | `0` bis `4` | Betriebsart des Heizkreises |
+| `Einstellungen.warmwasser` | `0` bis `4` | Betriebsart des Warmwassers |
+
+Die Werte entsprechen: `0` Automatik, `1` Zusätzlicher Wärmeerzeuger, `2`
+Party, `3` Ferien und `4` Aus.
+
+Der Adapter führt Schreibaufträge nacheinander aus, speichert die Änderung und
+liest sie anschließend erneut. Nur eine bestätigte Änderung wird als Erfolg
+geloggt.
 
 ---
 
@@ -359,6 +394,12 @@ Luxtronic-V.3.x/
 ---
 
 ## Changelog
+
+### 0.2.1 (2026-08-01)
+- Schreibunterstützung für Heizkreis und Warmwasser
+- WriteQueue, Verify und Refresh nach erfolgreichem Schreiben
+- Korrekte Skalierung von Rohwerten und ruhigere Protokoll-Logs
+- Versioniertes SSH-Deployment-Skript
 
 ### 0.1.0 (2026-03)
 - Erstveröffentlichung

@@ -1,151 +1,65 @@
-# Luxtronik2WS Adapter Architecture
+# Luxtronik2WS – Architektur
 
-Version: 0.2.0
+Version: 0.2.1
 
----
+## Überblick
 
-# Ziel
+Der Adapter liest die Daten der Wärmepumpe über das Luxtronik-WebSocket-
+Protokoll und stellt sie als ioBroker-States bereit. Zwei getestete
+Betriebsarten können zusätzlich geschrieben werden.
 
-Der Adapter trennt Kommunikation, Datenmodell und
-ioBroker vollständig voneinander.
+## Komponenten
 
-Die Kommunikation erfolgt ausschließlich über die
-Luxtronik-WebSocket-Schnittstelle.
+### `main.js`
 
----
+- Startet und stoppt den Adapter.
+- Erstellt und aktualisiert ioBroker-States.
+- Steuert Polling, Reconnect und die optionale MQTT-Ausgabe.
+- Übergibt nicht bestätigte State-Änderungen an die `WriteQueue`.
 
-# Komponenten
+### `Protocol`
 
-## main.js
+`Protocol` hält die dauerhafte WebSocket-Verbindung für das Lesen. Es meldet
+sich an, leitet Nachrichten an `main.js` weiter und sendet die GET-Befehle des
+Pollings.
 
-Verantwortlich für
+### `Session`
 
-- Adapterstart
-- ioBroker
-- MQTT
-- Konfiguration
+Speichert die bei der Anmeldung erhaltenen Navigationsnamen und ihre aktuellen
+Luxtronik-IDs. Die IDs werden bei jeder Verbindung neu eingelesen.
 
-Nicht verantwortlich für
+### `WriteQueue`
 
-- WebSocket
-- Parsing
-- SET
-- SAVE
+Reiht Schreibaufträge nach Eingangsreihenfolge ein. Es läuft immer nur ein
+Auftrag gleichzeitig, damit sich `SET` und `SAVE` nicht gegenseitig stören.
 
----
+### `Writer` und `WriteSession`
 
-## Protocol
+`Writer` löst eine unterstützte ioBroker-State-ID über `write-mapping.js` auf.
+Für jeden Auftrag öffnet `WriteSession` eine kurzlebige WebSocket-Verbindung
+und führt aus:
 
-Verantwortlich für
+1. Anmeldung und Einlesen der Navigation
+2. `GET` des Zielbereichs
+3. `SET` mit der Luxtronik-Rohwert-ID
+4. `SAVE;1`
+5. erneutes `GET` und Vergleich des zurückgelesenen Werts (Verify)
+6. Verbindung schließen
 
-- WebSocket
-- Login
-- RX
-- TX
-- JSON Parsing
-- Dispatcher
+Nur ein bestätigter Vergleich zählt als erfolgreicher Schreibvorgang.
 
-Keine Kenntnis über ioBroker.
+## Datenfluss
 
----
+```text
+Lesen:     Luxtronik → Protocol → main.js → ioBroker → MQTT (optional)
+Schreiben: ioBroker → WriteQueue → Writer → WriteSession → Luxtronik
+```
 
-## ObjectCache
+## Aktuelle Grenzen
 
-Speichert sämtliche Parameter.
-
-Quelle der Wahrheit für
-
-- luxId
-- raw
-- value
-- type
-- options
-- writable
-
----
-
-## Writer
-
-Verantwortlich für
-
-SET
-
-SAVE
-
-Verify
-
-Retry
-
----
-
-# Datenfluss
-
-Lesen
-
-Protocol
-
-↓
-
-Parameter
-
-↓
-
-ObjectCache
-
-↓
-
-ioBroker
-
-↓
-
-MQTT
-
-Schreiben
-
-ioBroker
-
-↓
-
-Writer
-
-↓
-
-ObjectCache
-
-↓
-
-Protocol
-
-↓
-
-Luxtronik
-
----
-
-# Architekturregeln
-
-1.
-Keine Klasse kennt WebSocket außer Protocol.
-
-2.
-Keine Klasse kennt ioBroker außer main.js.
-
-3.
-Writer arbeitet ausschließlich mit Parameter-Objekten.
-
-4.
-ObjectCache ist die einzige Quelle für Metadaten.
-
-5.
-LuxIDs werden niemals dauerhaft gespeichert.
-
-
-## Parameter Model
-
-Der Adapter verwendet intern ausschließlich Parameter-Objekte.
-
-Ein Parameter beschreibt genau ein Objekt der Luxtronik.
-
-Eigenschaften:
-
-...q
+- Schreibbar sind nur die in `write-mapping.js` hinterlegten Betriebsarten für
+  Heizkreis und Warmwasser.
+- `ObjectCache` und `Parameter` sind vorbereitete Dateien, aber noch kein
+  aktiver Teil des Laufzeitpfads.
+- Ein automatischer Retry bei fehlgeschlagener Verifikation ist noch nicht
+  implementiert.

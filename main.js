@@ -1,11 +1,10 @@
 'use strict';
 
 const Protocol = require('./lib/protocol');
-const Constants = require('./lib/constants');
 
 const utils = require('@iobroker/adapter-core');
-const WebSocket = require('ws');
 const Writer = require('./lib/writer');
+const WriteQueue = require('./lib/write-queue');
 const Session = require('./lib/session');
 let mqttClient = null;
 
@@ -25,6 +24,7 @@ class Luxtronik2WS extends utils.Adapter {
         this.createdObjects = new Set();
 		this.protocol = new Protocol(this);
 		this.writer = new Writer(this);
+		this.writeQueue = new WriteQueue(this, this.writer);
 		this.session = new Session();
 
         // Mapping: Bereichsname → Config-Flag
@@ -50,7 +50,7 @@ class Luxtronik2WS extends utils.Adapter {
     }
 
     async onReady() {
-        this.log.info(`Luxtronik2WS Adapter gestartet v0.1.0`);
+        this.log.info(`Luxtronik2WS Adapter gestartet v0.2.1`);
         this.log.info(`Ziel: ${this.config.host}:${this.config.port}`);
         await this.setStateAsync('info.connection', false, true);
 
@@ -157,7 +157,6 @@ async handleMessage(raw) {
     }
 
     if (data.items && Array.isArray(data.items)) {
-
         await this.processItems(
             data.items,
             data.name || 'unknown'
@@ -174,22 +173,29 @@ async handleMessage(raw) {
 
 	extractNavIds(sections) {
 
-		const recurse = (items) => {
+		const addNavigation = item => {
+
+			if (!item.id || !item.name) {
+				return;
+			}
+
+			this.session.addNavigation(
+				item.name,
+				item.id
+			);
+
+			this.navIds.push({
+				id: item.id,
+				name: item.name
+			});
+
+		};
+
+		const recurse = items => {
 
 			for (const item of items) {
 
-				if (item.id && item.name) {
-
-					this.navIds.push({
-						id: item.id,
-						name: item.name
-					});
-
-					this.session.addNavigation(
-						item.name,
-						item.id
-					);
-				}
+				addNavigation(item);
 
 				if (item.items && item.items.length > 0) {
 					recurse(item.items);
@@ -199,19 +205,7 @@ async handleMessage(raw) {
 
 		for (const section of sections) {
 
-			// Oberste Ebene ebenfalls aufnehmen
-			if (section.id && section.name) {
-
-				this.navIds.push({
-					id: section.id,
-					name: section.name
-				});
-
-				this.session.addNavigation(
-					section.name,
-					section.id
-				);
-			}
+			addNavigation(section);
 
 			if (section.items) {
 				recurse(section.items);
@@ -226,113 +220,251 @@ pollAll() {
         return;
     }
 
-    const active = this.session
-        .getNavigationEntries()
+    const active = this.navIds
         .filter(entry => this.isSectionEnabled(entry.name));
 
     this.log.debug(`🔄 Polling ${active.length} Bereiche...`);
 
     for (const entry of active) {
+		this.log.debug(`GET ${entry.name}`);
         this.send(`GET;${entry.id}`);
     }
 }
 
+
+	async refreshNavigation(name) {
+
+		if (!this.isConnected || !this.isReady) {
+			return;
+		}
+
+		const entry = this.session
+			.getNavigationEntries()
+			.find(e => e.name === name);
+
+		if (!entry) {
+
+			this.log.warn(
+				`Refresh: Bereich "${name}" nicht gefunden.`
+			);
+
+			return;
+		}
+
+		this.log.info(
+			`REFRESH -> ${name}`
+		);
+
+		this.send(
+			`GET;${entry.id}`
+		);
+
+	}
+
     // ─── States + MQTT ────────────────────────────────────────────────────────
 
-    async processItems(items, sectionName) {
-        for (const item of items) {
+async processItems(items, sectionName) {
 
+    if (!Array.isArray(items)) {
+        return;
+    }
 
+    for (const item of items) {
 
-            if (item.value === undefined || item.value === null || !item.name) continue;
-			
-			if (item.id) {
-				this.session.addItem(item.name, item.id);
-			}
-            
-			const stateId = this.buildStateId(sectionName, item.name);
-            const value = this.parseValue(item.value);
-            const unit = item.unit || '';
-            const role = this.guessRole(item.name, unit);
+        // -----------------------------
+        // Unterpunkte zuerst verarbeiten
+        // -----------------------------
 
+        if (Array.isArray(item.items) && item.items.length > 0) {
 
-            // Typ immer korrekt bestimmen — nie von typeof value abhängig machen
-            // Typ bestimmen
-				let stateType;
+			const nextSection = item.name
+				? this.buildStateId(sectionName, item.name)
+				: sectionName;
 
-					if (item.raw !== undefined) {					    stateType = typeof item.raw;
-				} else {
-				    stateType =
-				        (typeof value === 'boolean') ? 'boolean' :
-				        (typeof value === 'number') ? 'number' : 'string';
-				}
-
-            if (!this.createdObjects.has(stateId)) {
-                await this.setObjectAsync(stateId, {
-                    type: 'state',
-                    common: {
-						name: item.name,
-						type: stateType,
-						role: role,
-						unit: unit,
-						read: true,
-						write: item.raw !== undefined,
-
-						min: item.min !== undefined
-							? (item.div ? item.min / item.div : item.min)
-							: undefined,
-
-						max: item.max !== undefined
-							? (item.div ? item.max / item.div : item.max)
-							: undefined,
-
-						step: item.step !== undefined
-							? (item.div ? item.step / item.div : item.step)
-							: undefined,
-
-						states: item.options || undefined
-					},
-                    native: {
-						luxId: item.id || '',
-						raw: item.raw,
-						type: item.type || '',
-						div: item.div || 1,
-						options: item.options || null,
-						min: item.min,
-						max: item.max,
-						step: item.step
-					}
-                });
-                this.createdObjects.add(stateId);
-                this.log.debug(`📝 Objekt erstellt: ${stateId} (${stateType})`);
-            }
-
-            // Typ-Konvertierung sicherstellen bevor State gesetzt wird
-            let safeValue = value;
-            if (stateType === 'number' && typeof value !== 'number') {
-                safeValue = parseFloat(value) || 0;
-            } else if (stateType === 'boolean' && typeof value !== 'boolean') {
-                safeValue = value === 'true' || value === '1' || value === 1;
-            } else if (stateType === 'string' && typeof value !== 'string') {
-                safeValue = String(value);
-            }
-
-            await this.setStateAsync(stateId, { val: safeValue, ack: true });
-
-            // An Loxone via MQTT senden
-            this.publishMqtt(sectionName, item.name, safeValue, unit);
-
-            this.log.debug(`📊 ${stateId} = ${safeValue} ${unit}`);
+            await this.processItems(
+                item.items,
+                nextSection
+            );
         }
-    }
 
-    buildStateId(section, name) {
-        const clean = (s) => s
-            .toLowerCase()
-            .replace(/ä/g, 'ae').replace(/ö/g, 'oe').replace(/ü/g, 'ue').replace(/ß/g, 'ss')
-            .replace(/[^a-z0-9_]/g, '_').replace(/_+/g, '_').replace(/^_|_$/g, '');
-        return `${clean(section)}.${clean(name)}`;
+        // Container ohne Wert überspringen
+        if (item.value === undefined || item.value === null || !item.name) {
+            continue;
+        }
+
+        const stateId = this.buildStateId(
+            sectionName,
+            item.name
+        );
+
+		const hasRaw =
+			item.raw !== undefined;
+
+		const value = hasRaw
+			? (item.div ? item.raw / item.div : item.raw)
+			: this.parseValue(item.value);
+
+        const unit = item.unit || '';
+
+        const role = this.guessRole(
+            item.name,
+            unit
+        );
+
+        // -----------------------------
+        // Datentyp bestimmen
+        // -----------------------------
+
+        let stateType;
+
+        if (item.raw !== undefined) {
+            stateType = typeof item.raw;
+        } else {
+
+            stateType =
+                typeof value === 'boolean'
+                    ? 'boolean'
+                    : typeof value === 'number'
+                        ? 'number'
+                        : 'string';
+        }
+
+        // ioBroker erlaubt keine nachträgliche Änderung des State-Typs. Bei
+        // bestehenden Objekten muss deshalb deren Typ für den Wert verwendet
+        // werden, auch wenn die Luxtronik nun einen numerischen raw-Wert liefert.
+        const existingObject = await this.getObjectAsync(stateId);
+
+        if (
+            existingObject &&
+            ['boolean', 'number', 'string'].includes(
+                existingObject.common?.type
+            )
+        ) {
+            stateType = existingObject.common.type;
+        }
+
+        // -----------------------------
+        // Objekt erzeugen
+        // -----------------------------
+
+        if (!this.createdObjects.has(stateId)) {
+
+            await this.setObjectAsync(stateId, {
+
+                type: 'state',
+
+                common: {
+
+                    name: item.name,
+
+                    type: stateType,
+
+                    role,
+
+                    unit,
+
+                    read: true,
+
+                    write: item.raw !== undefined,
+
+                    min: item.min !== undefined
+                        ? (item.div ? item.min / item.div : item.min)
+                        : undefined,
+
+                    max: item.max !== undefined
+                        ? (item.div ? item.max / item.div : item.max)
+                        : undefined,
+
+                    step: item.step !== undefined
+                        ? (item.div ? item.step / item.div : item.step)
+                        : undefined,
+
+                    states: item.options || undefined
+                },
+
+                native: {
+
+                    luxId: item.id || '',
+
+                    raw: item.raw,
+
+                    type: item.type || '',
+
+                    div: item.div || 1,
+
+                    options: item.options || null,
+
+                    min: item.min,
+
+                    max: item.max,
+
+                    step: item.step
+                }
+            });
+
+            this.createdObjects.add(stateId);
+        }
+
+        // -----------------------------
+        // Typ konvertieren
+        // -----------------------------
+
+        let safeValue = value;
+
+        if (stateType === 'number' && typeof value !== 'number') {
+            safeValue = parseFloat(value) || 0;
+        }
+
+        if (stateType === 'boolean' && typeof value !== 'boolean') {
+            safeValue =
+                value === true ||
+                value === 'true' ||
+                value === '1' ||
+                value === 1;
+        }
+
+        if (stateType === 'string' && typeof value !== 'string') {
+            safeValue = String(value);
+        }
+
+        await this.setStateAsync(stateId, {
+            val: safeValue,
+            ack: true
+        });
+
+
+        this.publishMqtt(
+            sectionName,
+            item.name,
+            safeValue,
+            unit
+        );
     }
+}
+
+	buildStateId(path, name) {
+
+		if (!path || path.length === 0) {
+			return this.cleanName(name);
+		}
+
+		return `${path}.${this.cleanName(name)}`;
+
+	}
+
+	cleanName(name) {
+
+    return String(name)
+        .toLowerCase()
+        .replace(/ä/g, 'ae')
+        .replace(/ö/g, 'oe')
+        .replace(/ü/g, 'ue')
+        .replace(/ß/g, 'ss')
+        .replace(/[^a-z0-9]/g, '_')
+        .replace(/_+/g, '_')
+        .replace(/^_|_$/g, '');
+
+	}
 
     parseValue(raw) {
         if (typeof raw === 'number' || typeof raw === 'boolean') return raw;
@@ -361,28 +493,44 @@ pollAll() {
 
 async onStateChange(id, state) {
 
-    if (!state || state.ack) return;
-
-    const obj = await this.getObjectAsync(id);
-
-    if (!obj?.native?.luxId) {
-        this.log.warn(`Keine luxId für ${id}`);
+    if (!state || state.ack) {
         return;
     }
 
-    const command = `SET;set_${obj.native.luxId};${state.val}`;
+    try {
 
-	this.log.info(`LuxID=${obj.native.luxId} RAW=${state.val}`);
-	this.send(command);
+        const result =
+            await this.writeQueue.enqueue(
+                id,
+                state.val
+            );
 
-	setTimeout(() => {
-	    this.send("SAVE;1");
-	}, 250);
+        if (
+            result &&
+            result.success &&
+            result.navigation
+        ) {
+
+            await this.refreshNavigation(
+                result.navigation
+            );
+
+        }
+
+    } catch (e) {
+
+        this.log.error(
+            `Schreibfehler: ${e.message}`
+        );
+
+    }
+
 }
 
     onUnload(callback) {
         try {
             this.clearTimers();
+            this.writeQueue.stop();
             if (mqttClient) { mqttClient.end(); mqttClient = null; }
             if (this.ws) { this.ws.terminate(); this.ws = null; }
             this.log.info('Adapter gestoppt');
